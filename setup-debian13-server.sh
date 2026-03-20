@@ -5,9 +5,9 @@ set -e
 # Usage: ./setup-debian13-server.sh [OPTIONS]
 # Run as root
 
-DRY_RUN=false
 DOCKER=false
 NONINTERACTIVE=false
+SETUP_USER="${SUDO_USER:-tim}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -37,17 +37,38 @@ Options:
     -d, --docker        Install and configure Docker
     -n, --non-interactive   Run non-interactively (assume yes to all prompts)
     -y                  Alias for --non-interactive
+    -u, --user USER     User to configure (default: \$SUDO_USER or tim)
     -h, --help          Show this help message
 
 Examples:
-    $(basename "$0") -dny          # Install everything non-interactively
+    $(basename "$0") -d -n -y      # Install everything non-interactively
     $(basename "$0") --docker      # Interactive mode with Docker option
+    $(basename "$0") -d -u alice   # Install Docker, configure for user alice
 
 EOF
     exit 0
 }
 
+# Expand combined short flags (e.g. -dny -> -d -n -y)
+expand_flags() {
+    local expanded=()
+    for arg in "$@"; do
+        if [[ "$arg" =~ ^-[a-zA-Z]{2,}$ ]]; then
+            local flags="${arg#-}"
+            for (( i=0; i<${#flags}; i++ )); do
+                expanded+=("-${flags:$i:1}")
+            done
+        else
+            expanded+=("$arg")
+        fi
+    done
+    printf '%s\n' "${expanded[@]}"
+}
+
 # Parse arguments
+mapfile -t ARGS < <(expand_flags "$@")
+set -- "${ARGS[@]}"
+
 while [[ $# -gt 0 ]]; do
     case $1 in
         -d|--docker)
@@ -61,6 +82,10 @@ while [[ $# -gt 0 ]]; do
         -y)
             NONINTERACTIVE=true
             shift
+            ;;
+        -u|--user)
+            SETUP_USER="$2"
+            shift 2
             ;;
         -h|--help)
             usage
@@ -85,9 +110,9 @@ if [[ ! -f /etc/debian_version ]]; then
 fi
 
 DEBIAN_VERSION=$(cat /etc/debian_version)
-if [[ ! "$DEBIAN_VERSION" =~ ^13 ]]; then
+if [[ ! "$DEBIAN_VERSION" =~ ^13 && ! "$DEBIAN_VERSION" =~ trixie ]]; then
     log_warn "Detected Debian version: $DEBIAN_VERSION"
-    log_warn "This script is tested for Debian 13"
+    log_warn "This script is tested for Debian 13 (trixie)"
 fi
 
 # Function to prompt for yes/no
@@ -112,43 +137,54 @@ ask_yes_no() {
 log_info "Updating package lists..."
 apt-get update
 
-# Add user 'tim' to sudo group if it exists
-if id "tim" &>/dev/null; then
-    log_info "Adding user 'tim' to sudo group..."
-    usermod -aG sudo tim
-    log_info "User 'tim' added to sudo group"
+# Add user to sudo group if it exists
+if id "$SETUP_USER" &>/dev/null; then
+    log_info "Adding user '$SETUP_USER' to sudo group..."
+    usermod -aG sudo "$SETUP_USER"
+    log_info "User '$SETUP_USER' added to sudo group"
+else
+    log_warn "User '$SETUP_USER' not found — skipping sudo group addition"
 fi
 
 # Install base packages
-log_info "Installing base packages (sudo, cifs-client, curl, btop, build-essential, linux-headers)..."
+log_info "Installing base packages..."
 apt-get install -y \
     sudo \
     cifs-utils \
     curl \
     btop \
-    build-essential \
-    linux-headers-$(uname -r)
+    build-essential
+
+# linux-headers may not match running kernel on fresh installs; don't abort if unavailable
+if apt-get install -y "linux-headers-$(uname -r)" 2>/dev/null; then
+    log_info "Installed linux-headers-$(uname -r)"
+else
+    log_warn "linux-headers-$(uname -r) not available — install manually or reboot and re-run"
+fi
 
 # Setup Docker if requested
 setup_docker() {
     log_info "Setting up Docker..."
     
     # Install Docker using the official script
-    log_info "Downloading and running Docker installation script..."
-    curl -fsSL https://get.docker.com | sh
-    
+    log_info "Downloading Docker installation script..."
+    curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
+    log_info "Running Docker installation script..."
+    sh /tmp/get-docker.sh
+    rm -f /tmp/get-docker.sh
+
     # Start and enable Docker service
     log_info "Starting Docker service..."
     systemctl start docker
     systemctl enable docker
-    
-    # Add user 'tim' to docker group if it exists
-    if id "tim" &>/dev/null; then
-        log_info "Adding user 'tim' to docker group..."
-        usermod -aG docker tim
-        log_info "User 'tim' added to docker group"
+
+    # Add user to docker group if it exists
+    if id "$SETUP_USER" &>/dev/null; then
+        log_info "Adding user '$SETUP_USER' to docker group..."
+        usermod -aG docker "$SETUP_USER"
+        log_info "User '$SETUP_USER' added to docker group"
     else
-        log_warn "User 'tim' not found - skipping group additions"
+        log_warn "User '$SETUP_USER' not found — skipping docker group addition"
     fi
     
     log_info "Docker installation complete!"

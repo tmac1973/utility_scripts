@@ -10,7 +10,8 @@ A bash script for setting up a new Debian 13 server with common tools and option
 
 **Usage:**
 ```bash
-sudo ./setup-debian13-server.sh [OPTIONS]
+# Must be run as root (not with sudo)
+./setup-debian13-server.sh [OPTIONS]
 ```
 
 **Options:**
@@ -22,13 +23,13 @@ sudo ./setup-debian13-server.sh [OPTIONS]
 **Examples:**
 ```bash
 # Install base packages only (interactive)
-sudo ./setup-debian13-server.sh
+./setup-debian13-server.sh
 
 # Install everything non-interactively
-sudo ./setup-debian13-server.sh -dny
+./setup-debian13-server.sh -dny
 
 # Interactive mode with Docker option
-sudo ./setup-debian13-server.sh --docker
+./setup-debian13-server.sh --docker
 ```
 
 **What it installs:**

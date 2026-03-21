@@ -14,6 +14,25 @@ import urllib.request
 from pathlib import Path
 
 
+def fetch_model_info(base_url: str, model_id: str, api_key: str | None = None, extra_headers: dict | None = None) -> dict | None:
+    """Fetch model-specific info from /api/models/{id}/info if available."""
+    url = f"{base_url.rstrip('/')}/api/models/{model_id}/info"
+    req = urllib.request.Request(url)
+    if api_key:
+        req.add_header("Authorization", f"Bearer {api_key}")
+    req.add_header("Content-Type", "application/json")
+    if extra_headers:
+        for k, v in extra_headers.items():
+            req.add_header(k, v)
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode())
+            return data
+    except (urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError, OSError):
+        return None
+
+
 def fetch_models(base_url: str, api_key: str | None = None, extra_headers: dict | None = None) -> list[dict]:
     """Fetch available models from the /models endpoint."""
     url = f"{base_url.rstrip('/')}/models"
@@ -87,6 +106,26 @@ def guess_context_window(model_id: str) -> int:
     return 8_192
 
 
+def get_context_window_from_api(base_url: str, model_id: str, api_key: str | None = None, extra_headers: dict | None = None) -> int | None:
+    """Try to fetch context window from /api/models/{id}/info endpoint."""
+    info = fetch_model_info(base_url, model_id, api_key, extra_headers)
+    if info:
+        # Try common field names for context window
+        for field in ("context_length", "context_length", "max_context_length", "max_context_length", "context_size", "max_input_tokens", "context_window"):
+            if field in info:
+                val = info[field]
+                if isinstance(val, (int, float)):
+                    return int(val)
+        # Also check nested structure
+        if "data" in info and isinstance(info["data"], dict):
+            for field in ("context_length", "max_context_length", "context_size", "max_input_tokens", "context_window"):
+                if field in info["data"]:
+                    val = info["data"][field]
+                    if isinstance(val, (int, float)):
+                        return int(val)
+    return None
+
+
 def guess_can_reason(model_id: str) -> bool:
     mid = model_id.lower()
     return any(x in mid for x in ("o1", "o3", "o4", "reason", "think", "deepseek-r1", "qwq"))
@@ -108,15 +147,19 @@ def prettify_model_name(model_id: str) -> str:
     return name.title()
 
 
-def build_model_entry(model: dict) -> dict:
+def build_model_entry(model: dict, base_url: str, api_key: str | None = None, extra_headers: dict | None = None) -> dict:
     mid = model["id"]
+    # Try to get context window from API first, fall back to guessing
+    context_window = get_context_window_from_api(base_url, mid, api_key, extra_headers)
+    if context_window is None:
+        context_window = guess_context_window(mid)
     return {
         "id": mid,
         "name": prettify_model_name(mid),
         "cost_per_1m_in": 0,
         "cost_per_1m_out": 0,
-        "context_window": guess_context_window(mid),
-        "default_max_tokens": min(4096, guess_context_window(mid)),
+        "context_window": context_window,
+        "default_max_tokens": min(4096, context_window),
         "can_reason": guess_can_reason(mid),
         "supports_attachments": guess_supports_attachments(mid),
     }
@@ -334,7 +377,7 @@ def main():
         print("No models selected.", file=sys.stderr)
         sys.exit(1)
 
-    model_entries = [build_model_entry(m) for m in selected]
+    model_entries = [build_model_entry(m, base_url, actual_key, extra_headers or None) for m in selected]
 
     # Show preview
     print(f"\nWill configure {len(model_entries)} model(s) for provider '{provider_key}':")
